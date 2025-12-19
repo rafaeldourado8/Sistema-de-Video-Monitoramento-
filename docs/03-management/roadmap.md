@@ -79,7 +79,7 @@
 
 ### Definition of Done
 - [ ] Servidor com Docker funcionando
-- [ ] 20 câmeras fake rodando por 1 hora sem crash
+- [ ] 20 câmeras reais rodando por 1 hora sem crash
 - [ ] Dashboard Grafana mostrando métricas
 - [ ] **GATE:** Se CPU > 70%, PARAR e repensar stack
 
