@@ -1,3 +1,20 @@
+# vms-mvp/.gitignore
+
+# Python / Django
+__pycache__/
+*.py[cod]
 /venv
 .env
-__pycache__
+db.sqlite3
+
+# Segredos e Certificados (CRÍTICO)
+secrets/
+*.pem
+*.key
+*.crt
+
+# Docker volumes e logs locais
+postgres_data/
+redis_data/
+minio_data/
+hls_cache/

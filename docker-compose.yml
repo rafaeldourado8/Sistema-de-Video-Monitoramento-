@@ -1,0 +1,158 @@
+version: '3.9'
+
+networks:
+  edge:     # Exposto ao host (80, 443, 8554)
+    driver: bridge
+  backend:  # Comunicação interna (API <-> AI <-> Stream)
+    driver: bridge
+  data:     # Persistência (DB, Queue, Cache)
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  hls_cache:
+
+services:
+  # --- EDGE LAYER (Entrada) ---
+  
+  # Load Balancer & SSL Termination
+  haproxy:
+    image: haproxy:2.8-alpine
+    container_name: gt_haproxy
+    ports:
+      - "80:80"     # HTTP (Redirect -> HTTPS)
+      - "443:443"   # HTTPS
+      - "8404:8404" # Stats
+    volumes:
+      - ./config/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./secrets/certs:/etc/ssl/certs:ro
+    networks:
+      - edge
+      - backend
+    depends_on:
+      - kong
+      - mediamtx
+
+  # API Gateway
+  kong:
+    image: kong:3.4
+    container_name: gt_kong
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong.yml
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    volumes:
+      - ./config/kong/kong.yml:/kong.yml:ro
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Streaming Server
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: gt_mediamtx
+    ports:
+      - "8554:8554" # RTSP Ingest
+      - "8888:8888" # HLS Output
+    volumes:
+      - ./config/mediamtx/mediamtx.yml:/mediamtx.yml:ro
+      - hls_cache:/tmp/hls
+    networks:
+      - edge
+      - backend
+
+  # --- APPLICATION LAYER (Core) ---
+
+  # Backend Principal (Django)
+  backend:
+    build: 
+      context: ./services/backend
+      dockerfile: Dockerfile
+    container_name: gt_backend
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./services/backend:/app
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@pgbouncer:6432/gt_vision
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://admin:admin@rabbitmq:5672
+    networks:
+      - backend
+      - data
+    depends_on:
+      - pgbouncer
+      - redis
+      - rabbitmq
+
+  # --- DATA LAYER (Persistência) ---
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: gt_postgres
+    environment:
+      POSTGRES_DB: gt_vision
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 5
+
+  pgbouncer:
+    image: pgbouncer/pgbouncer:latest
+    container_name: gt_pgbouncer
+    environment:
+      DATABASES_HOST: postgres
+      DATABASES_PORT: 5432
+      DATABASES_USER: postgres
+      DATABASES_PASSWORD: postgres
+      DATABASES_DBNAME: gt_vision
+      PGBOUNCER_POOL_MODE: session
+      PGBOUNCER_LISTEN_PORT: 6432
+      PGBOUNCER_AUTH_TYPE: trust # Apenas dev!
+    networks:
+    - data
+    depends_on:
+    - postgres
+  redis:
+    image: redis:7-alpine
+    container_name: gt_redis
+    networks:
+      - data
+
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: gt_rabbitmq
+    ports:
+      - "15672:15672" # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin
+    networks:
+      - data
+
+  minio:
+    image: minio/minio:latest
+    container_name: gt_minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" # API S3
+      - "9001:9001" # Console
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password
+    volumes:
+      - minio_data:/data
+    networks:
+      - data
